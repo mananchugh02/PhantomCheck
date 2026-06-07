@@ -70,7 +70,14 @@ func init() {
 			}
 			results = append(results, scorer.ScoreFile(filename, findings, runResult))
 		}
-		printReport(scorer.BuildReport(results))
+		report := scorer.BuildReport(results)
+		printReport(report)
+		body := ghrepo.FormatReport(report)
+		if err := ghrepo.PostComment(ctx, client, owner, repo, prNumber, body); err != nil {
+			fmt.Fprintln(os.Stderr, "error posting PR comment:", err)
+		} else {
+			fmt.Println("✅ Report posted as a comment on the PR.")
+		}
 		return nil
 	}
 	rootCmd.AddCommand(cmd)
