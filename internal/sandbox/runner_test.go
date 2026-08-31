@@ -36,3 +36,22 @@ func TestRun_Panic(t *testing.T) {
 		t.Fatalf("expected panic trace, got empty string")
 	}
 }
+
+func TestRun_SkipsNonMainPackage(t *testing.T) {
+	result, err := Run(SampleLibraryCode)
+	if err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+	if !result.Skipped {
+		t.Fatalf("expected sandbox to be skipped, got %+v", result)
+	}
+	if result.SkipReason == "" {
+		t.Fatalf("expected skip reason, got empty string")
+	}
+	if result.CompileError != "" {
+		t.Fatalf("expected no compile error, got %q", result.CompileError)
+	}
+	if result.Panicked {
+		t.Fatalf("expected no panic, got %+v", result)
+	}
+}

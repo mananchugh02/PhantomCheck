@@ -28,11 +28,13 @@ func ScoreFile(filename string, findings []analyzer.Finding, result sandbox.Sand
 			score += 0.35
 		}
 	}
-	if result.Panicked {
-		score += 0.40
-	}
-	if result.CompileError != "" {
-		score += 0.50
+	if !result.Skipped {
+		if result.Panicked {
+			score += 0.40
+		}
+		if result.CompileError != "" {
+			score += 0.50
+		}
 	}
 	if score > 1.0 {
 		score = 1.0

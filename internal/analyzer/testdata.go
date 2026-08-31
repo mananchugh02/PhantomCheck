@@ -16,3 +16,24 @@ func demo() {
 	_ = strings.ContainsIgnoreCase("phantom", "ANT")
 	fmt.PrintRed("bad")
 }`
+
+const SampleMethodCode = `package main
+
+import "strings"
+
+type User struct {
+	Name string
+}
+
+func (u User) GetName() string {
+	return u.Name
+}
+
+func demo() {
+	var sb strings.Builder
+	sb.WriteString("ok")
+	sb.WriteStrnig("typo")
+	user := User{Name: "Ada"}
+	user.GetName()
+	user.GetEmail()
+}`

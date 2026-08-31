@@ -95,3 +95,28 @@ func demo() {
 		}
 	}
 }
+
+func TestAnalyze_PhantomMethodCalls(t *testing.T) {
+	findings, err := Analyze(SampleMethodCode)
+	if err != nil {
+		t.Fatalf("Analyze returned error: %v", err)
+	}
+	want := map[string]bool{
+		"strings.Builder.WriteString": false,
+		"strings.Builder.WriteStrnig": true,
+		"User.GetName":                false,
+		"User.GetEmail":               true,
+	}
+	for _, finding := range findings {
+		key := finding.Package + "." + finding.Func
+		if wantPhantom, ok := want[key]; ok {
+			if finding.IsPhantom != wantPhantom {
+				t.Fatalf("finding %s on line %d: expected IsPhantom=%v, got %v", key, finding.Line, wantPhantom, finding.IsPhantom)
+			}
+			delete(want, key)
+		}
+	}
+	if len(want) != 0 {
+		t.Fatalf("missing method findings for: %v", want)
+	}
+}

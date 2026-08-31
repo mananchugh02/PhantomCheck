@@ -48,3 +48,15 @@ func TestBuildReport(t *testing.T) {
 		t.Fatalf("expected total panics 1, got %d", report.TotalPanics)
 	}
 }
+
+func TestScoreFile_SkippedSandboxIgnoresRuntimePenalties(t *testing.T) {
+	findings := []analyzer.Finding{{IsPhantom: true}}
+	result := sandbox.SandboxResult{Skipped: true, SkipReason: "not runnable", Panicked: true, CompileError: "boom"}
+	file := ScoreFile("pkg/auth/auth.go", findings, result)
+	if file.Score != 0.35 {
+		t.Fatalf("expected score 0.35 from phantom findings only, got %v", file.Score)
+	}
+	if file.Risk != "MEDIUM" {
+		t.Fatalf("expected risk MEDIUM, got %q", file.Risk)
+	}
+}

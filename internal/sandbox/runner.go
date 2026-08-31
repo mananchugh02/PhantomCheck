@@ -3,6 +3,9 @@ package sandbox
 import (
 	"bytes"
 	"context"
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -17,9 +20,20 @@ type SandboxResult struct {
 	PanicTrace   string
 	Output       string
 	TimedOut     bool
+	Skipped      bool
+	SkipReason   string
 }
 
 func Run(src string) (SandboxResult, error) {
+	fset := token.NewFileSet()
+	file, err := parser.ParseFile(fset, "source.go", src, parser.AllErrors)
+	if err != nil {
+		return SandboxResult{Skipped: true, SkipReason: "could not parse source: " + strings.TrimSpace(err.Error())}, nil
+	}
+	if !isStandaloneMain(file) {
+		return SandboxResult{Skipped: true, SkipReason: "not a standalone `package main` file with `func main()`"}, nil
+	}
+
 	tempDir, err := os.MkdirTemp("", "phantomcheck-sandbox-*")
 	if err != nil {
 		return SandboxResult{}, err
@@ -65,4 +79,20 @@ func Run(src string) (SandboxResult, error) {
 		result.Output = trace
 	}
 	return result, nil
+}
+
+func isStandaloneMain(file *ast.File) bool {
+	if file == nil || file.Name == nil || file.Name.Name != "main" {
+		return false
+	}
+	for _, decl := range file.Decls {
+		fn, ok := decl.(*ast.FuncDecl)
+		if !ok || fn.Recv != nil || fn.Name == nil || fn.Name.Name != "main" {
+			continue
+		}
+		if fn.Type != nil && (fn.Type.Params == nil || len(fn.Type.Params.List) == 0) {
+			return true
+		}
+	}
+	return false
 }

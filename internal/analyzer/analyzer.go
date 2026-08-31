@@ -21,9 +21,14 @@ func Analyze(src string) ([]Finding, error) {
 	if err != nil {
 		return nil, err
 	}
-	info := &types.Info{Uses: map[*ast.Ident]types.Object{}}
+	info := &types.Info{
+		Uses:       map[*ast.Ident]types.Object{},
+		Types:      map[ast.Expr]types.TypeAndValue{},
+		Selections: map[*ast.SelectorExpr]*types.Selection{},
+	}
 	conf := types.Config{Importer: importer.Default(), Error: func(error) {}}
-	if _, err := conf.Check("sample", fset, []*ast.File{file}, info); err != nil && len(info.Uses) == 0 {
+	pkg, err := conf.Check("sample", fset, []*ast.File{file}, info)
+	if err != nil && len(info.Uses) == 0 {
 		return nil, err
 	}
 	findings := make([]Finding, 0)
@@ -36,17 +41,32 @@ func Analyze(src string) ([]Finding, error) {
 		if !ok {
 			return true
 		}
-		ident, ok := sel.X.(*ast.Ident)
-		if !ok {
+		if ident, ok := sel.X.(*ast.Ident); ok {
+			if pkgName, ok := info.Uses[ident].(*types.PkgName); ok {
+				obj := pkgName.Imported().Scope().Lookup(sel.Sel.Name)
+				findings = append(findings, Finding{Line: fset.Position(call.Pos()).Line, Package: ident.Name, Func: sel.Sel.Name, IsPhantom: obj == nil || !obj.Exported()})
+				return true
+			}
+		}
+		tv, ok := info.Types[sel.X]
+		if !ok || tv.Type == nil || tv.Type == types.Typ[types.Invalid] {
 			return true
 		}
-		pkgName, ok := info.Uses[ident].(*types.PkgName)
-		if !ok {
-			return true
-		}
-		obj := pkgName.Imported().Scope().Lookup(sel.Sel.Name)
-		findings = append(findings, Finding{Line: fset.Position(call.Pos()).Line, Package: ident.Name, Func: sel.Sel.Name, IsPhantom: obj == nil || !obj.Exported()})
+		_, selected := info.Selections[sel]
+		findings = append(findings, Finding{Line: fset.Position(call.Pos()).Line, Package: typeLabel(tv.Type, pkg), Func: sel.Sel.Name, IsPhantom: !selected})
 		return true
 	})
 	return findings, nil
+}
+
+func typeLabel(t types.Type, currentPkg *types.Package) string {
+	return types.TypeString(t, func(p *types.Package) string {
+		if p == nil {
+			return ""
+		}
+		if currentPkg != nil && p.Path() == currentPkg.Path() {
+			return ""
+		}
+		return p.Name()
+	})
 }

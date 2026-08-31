@@ -13,12 +13,63 @@ import (
 
 type Client struct{ *gh.Client }
 
+type ChangedFile struct {
+	Path         string
+	Status       string
+	PreviousPath string
+	Patch        string
+}
+
+type PRContext struct {
+	Title          string
+	Description    string
+	CommitMessages []string
+	HeadSHA        string
+}
+
 func NewClient(token string) *Client {
 	if token == "" {
 		return &Client{Client: gh.NewClient(nil)}
 	}
 	ts := oauth2.StaticTokenSource(&oauth2.Token{AccessToken: token})
 	return &Client{Client: gh.NewClient(oauth2.NewClient(context.Background(), ts))}
+}
+
+func CategorizeFiles(files []*gh.CommitFile) (toAnalyze []ChangedFile, deleted []ChangedFile) {
+	for _, file := range files {
+		if file == nil {
+			continue
+		}
+		path := file.GetFilename()
+		if !strings.HasSuffix(strings.ToLower(path), ".go") {
+			continue
+		}
+		changed := ChangedFile{Path: path, Status: file.GetStatus(), PreviousPath: file.GetPreviousFilename(), Patch: file.GetPatch()}
+		if changed.Status == "removed" {
+			deleted = append(deleted, changed)
+			continue
+		}
+		toAnalyze = append(toAnalyze, changed)
+	}
+	return toAnalyze, deleted
+}
+
+func GetChangedFiles(ctx context.Context, client *Client, owner, repo string, prNumber int) ([]ChangedFile, []ChangedFile, error) {
+	var all []*gh.CommitFile
+	opts := &gh.ListOptions{PerPage: 100}
+	for {
+		chunk, resp, err := client.PullRequests.ListFiles(ctx, owner, repo, prNumber, opts)
+		if err != nil {
+			return nil, nil, err
+		}
+		all = append(all, chunk...)
+		if resp == nil || resp.NextPage == 0 {
+			break
+		}
+		opts.Page = resp.NextPage
+	}
+	toAnalyze, deleted := CategorizeFiles(all)
+	return toAnalyze, deleted, nil
 }
 
 func GetChangedGoFiles(ctx context.Context, client *Client, owner, repo string, prNumber int) ([]string, error) {
@@ -39,6 +90,36 @@ func GetChangedGoFiles(ctx context.Context, client *Client, owner, repo string, 
 		}
 		opts.Page = resp.NextPage
 	}
+}
+
+func GetPRContext(ctx context.Context, client *Client, owner, repo string, prNumber int) (*PRContext, error) {
+	pr, _, err := client.PullRequests.Get(ctx, owner, repo, prNumber)
+	if err != nil {
+		return nil, err
+	}
+	ctxInfo := &PRContext{Title: pr.GetTitle(), Description: pr.GetBody()}
+	opts := &gh.ListOptions{PerPage: 100}
+	for {
+		commits, resp, err := client.PullRequests.ListCommits(ctx, owner, repo, prNumber, opts)
+		if err != nil {
+			return nil, err
+		}
+		for _, commit := range commits {
+			if commit != nil && commit.GetCommit() != nil {
+				ctxInfo.CommitMessages = append(ctxInfo.CommitMessages, commit.GetCommit().GetMessage())
+			}
+		}
+		if resp == nil || resp.NextPage == 0 {
+			break
+		}
+		opts.Page = resp.NextPage
+	}
+	headSHA, err := GetPRHeadSHA(ctx, client, owner, repo, prNumber)
+	if err != nil {
+		return nil, err
+	}
+	ctxInfo.HeadSHA = headSHA
+	return ctxInfo, nil
 }
 
 func GetFileContent(ctx context.Context, client *Client, owner, repo, filepath, ref string) (string, error) {

@@ -9,7 +9,7 @@ import (
 	"github.com/mananchugh02/phantomcheck/internal/scorer"
 )
 
-func FormatReport(report scorer.PRReport) string {
+func FormatReport(report scorer.PRReport, deletedFiles []string) string {
 	var b strings.Builder
 	b.WriteString("## 🔍 PhantomCheck Analysis\n\n")
 	b.WriteString("| File | Score | Risk |\n|------|-------|------|\n")
@@ -30,6 +30,8 @@ func FormatReport(report scorer.PRReport) string {
 		switch {
 		case file.SandboxResult.CompileError != "":
 			fmt.Fprintf(&b, "- ❌ Compile error: %s\n", file.SandboxResult.CompileError)
+		case file.SandboxResult.Skipped:
+			fmt.Fprintf(&b, "- ⏭️ Sandbox skipped: %s\n", file.SandboxResult.SkipReason)
 		case file.SandboxResult.Panicked:
 			fmt.Fprintf(&b, "- ❌ Runtime panic: %s\n", file.SandboxResult.PanicTrace)
 		default:
@@ -42,6 +44,12 @@ func FormatReport(report scorer.PRReport) string {
 	fmt.Fprintf(&b, "| Phantom APIs   | %d |\n", report.TotalPhantom)
 	fmt.Fprintf(&b, "| Runtime panics | %d |\n", report.TotalPanics)
 	b.WriteString("\n> 🤖 Analyzed by [PhantomCheck](https://github.com/mananchugh02/phantomcheck)\n")
+	if len(deletedFiles) > 0 {
+		b.WriteString("\n### 🗑️ Deleted files (not analyzed)\n")
+		for _, path := range deletedFiles {
+			fmt.Fprintf(&b, "- `%s`\n", path)
+		}
+	}
 	return b.String()
 }
 
