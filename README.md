@@ -4,8 +4,8 @@
 
 [![Go 1.21+](https://img.shields.io/badge/Go-1.21%2B-00ADD8?logo=go&logoColor=white)](https://go.dev/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-2ea44f.svg)](LICENSE)
-[![Build](https://github.com/mananchugh02/phantomcheck/actions/workflows/tests.yml/badge.svg)](https://github.com/mananchugh02/phantomcheck/actions/workflows/tests.yml)
-[![PRs welcome](https://img.shields.io/badge/PRs-welcome-ff69b4)](https://github.com/mananchugh02/phantomcheck/pulls)
+[![Build](https://github.com/mananchugh02/PhantomCheck/actions/workflows/tests.yml/badge.svg)](https://github.com/mananchugh02/PhantomCheck/actions/workflows/tests.yml)
+[![PRs welcome](https://img.shields.io/badge/PRs-welcome-ff69b4)](https://github.com/mananchugh02/PhantomCheck/pulls)
 
 ## What is PhantomCheck?
 
@@ -105,7 +105,7 @@ It reports missing error handling, inverted conditions, off-by-one errors, and o
 | Runtime panics | 0 |
 | Semantic issues | 2 |
 
-> 🤖 Analyzed by [PhantomCheck](https://github.com/mananchugh02/phantomcheck)
+> 🤖 Analyzed by [PhantomCheck](https://github.com/mananchugh02/PhantomCheck)
 ```
 
 ## Getting started
@@ -113,7 +113,7 @@ It reports missing error handling, inverted conditions, off-by-one errors, and o
 ### Install
 
 ```bash
-git clone https://github.com/mananchugh02/phantomcheck.git
+git clone https://github.com/mananchugh02/PhantomCheck.git
 cd phantomcheck
 go build -o phantomcheck ./cmd/phantomcheck/
 ```
@@ -121,7 +121,7 @@ go build -o phantomcheck ./cmd/phantomcheck/
 Or install directly:
 
 ```bash
-go install github.com/mananchugh02/phantomcheck/cmd/phantomcheck@latest
+go install github.com/mananchugh02/PhantomCheck/cmd/phantomcheck@latest
 ```
 
 ### Analyze a PR
@@ -183,13 +183,12 @@ on:
 permissions:
   contents: read
   pull-requests: write
-  models: read
 
 jobs:
   analyze:
     runs-on: ubuntu-latest
     steps:
-      - name: Run PhantomCheck
+      - name: Checkout
         uses: actions/checkout@v4
 
       - name: Set up Go
@@ -198,13 +197,16 @@ jobs:
           go-version: '1.21'
 
       - name: Install PhantomCheck
-        run: go install github.com/mananchugh02/phantomcheck/cmd/phantomcheck@latest
+        run: go install github.com/mananchugh02/PhantomCheck/cmd/phantomcheck@latest
 
       - name: Analyze pull request
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
-        run: phantomcheck analyze --pr "https://github.com/${{ github.repository }}/pull/${{ github.event.pull_request.number }}" --fail-on HIGH
+        run: |
+          phantomcheck analyze \
+            --pr "https://github.com/${{ github.repository }}/pull/${{ github.event.pull_request.number }}" \
+            --fail-on HIGH
 ```
 
 The workflow needs `contents: read` to fetch changed files and `pull-requests: write` to update the PR comment. Add `GROQ_API_KEY` under repository **Settings → Secrets and variables → Actions** to enable semantic analysis; the other two layers work without it.
