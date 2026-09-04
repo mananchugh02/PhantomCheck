@@ -25,7 +25,7 @@ func (c *Client) Complete(system string, user string) (string, error) {
 			{"role": "system", "content": system},
 			{"role": "user", "content": user},
 		},
-		"max_tokens":  1024,
+		"max_tokens":  4096,
 		"temperature": 0.2,
 	}
 	body, err := json.Marshal(payload)
@@ -52,7 +52,8 @@ func (c *Client) Complete(system string, user string) (string, error) {
 	}
 	var parsed struct {
 		Choices []struct {
-			Message struct {
+			FinishReason string `json:"finish_reason"`
+			Message      struct {
 				Content string `json:"content"`
 			} `json:"message"`
 		} `json:"choices"`
@@ -62,6 +63,9 @@ func (c *Client) Complete(system string, user string) (string, error) {
 	}
 	if len(parsed.Choices) == 0 {
 		return "", fmt.Errorf("llm response contained no choices")
+	}
+	if parsed.Choices[0].FinishReason == "length" {
+		return "", fmt.Errorf("response truncated: model hit token limit before finishing. Try reducing the input size.")
 	}
 	return parsed.Choices[0].Message.Content, nil
 }

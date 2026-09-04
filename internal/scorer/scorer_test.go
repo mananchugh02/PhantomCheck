@@ -5,12 +5,13 @@ import (
 
 	"github.com/mananchugh02/phantomcheck/internal/analyzer"
 	"github.com/mananchugh02/phantomcheck/internal/sandbox"
+	"github.com/mananchugh02/phantomcheck/internal/semantic"
 )
 
 func TestScoreFile_WithIssues(t *testing.T) {
 	findings := []analyzer.Finding{{IsPhantom: true}, {IsPhantom: true}, {IsPhantom: false}}
 	result := sandbox.SandboxResult{Panicked: true}
-	file := ScoreFile("pkg/auth/auth.go", findings, result)
+	file := ScoreFile("pkg/auth/auth.go", findings, result, semantic.SemanticResult{})
 	if file.Score != 1.0 {
 		t.Fatalf("expected score 1.0, got %v", file.Score)
 	}
@@ -20,7 +21,7 @@ func TestScoreFile_WithIssues(t *testing.T) {
 }
 
 func TestScoreFile_NoIssues(t *testing.T) {
-	file := ScoreFile("pkg/utils/utils.go", nil, sandbox.SandboxResult{})
+	file := ScoreFile("pkg/utils/utils.go", nil, sandbox.SandboxResult{}, semantic.SemanticResult{})
 	if file.Score != 0.0 {
 		t.Fatalf("expected score 0.0, got %v", file.Score)
 	}
@@ -52,7 +53,7 @@ func TestBuildReport(t *testing.T) {
 func TestScoreFile_SkippedSandboxIgnoresRuntimePenalties(t *testing.T) {
 	findings := []analyzer.Finding{{IsPhantom: true}}
 	result := sandbox.SandboxResult{Skipped: true, SkipReason: "not runnable", Panicked: true, CompileError: "boom"}
-	file := ScoreFile("pkg/auth/auth.go", findings, result)
+	file := ScoreFile("pkg/auth/auth.go", findings, result, semantic.SemanticResult{})
 	if file.Score != 0.35 {
 		t.Fatalf("expected score 0.35 from phantom findings only, got %v", file.Score)
 	}

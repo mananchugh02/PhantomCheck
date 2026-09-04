@@ -3,25 +3,30 @@ package scorer
 import (
 	"github.com/mananchugh02/phantomcheck/internal/analyzer"
 	"github.com/mananchugh02/phantomcheck/internal/sandbox"
+	"github.com/mananchugh02/phantomcheck/internal/semantic"
 )
 
 type FileResult struct {
-	Filename      string
-	Score         float64
-	Risk          string
-	Findings      []analyzer.Finding
-	SandboxResult sandbox.SandboxResult
+	Filename           string
+	Score              float64
+	Risk               string
+	Findings           []analyzer.Finding
+	SemanticFindings   []semantic.SemanticFinding
+	SemanticSkipped    bool
+	SemanticSkipReason string
+	SandboxResult      sandbox.SandboxResult
 }
 
 type PRReport struct {
-	Files        []FileResult
-	OverallScore float64
-	OverallRisk  string
-	TotalPhantom int
-	TotalPanics  int
+	Files               []FileResult
+	OverallScore        float64
+	OverallRisk         string
+	TotalPhantom        int
+	TotalPanics         int
+	TotalSemanticIssues int
 }
 
-func ScoreFile(filename string, findings []analyzer.Finding, result sandbox.SandboxResult) FileResult {
+func ScoreFile(filename string, findings []analyzer.Finding, result sandbox.SandboxResult, semResult semantic.SemanticResult) FileResult {
 	score := 0.0
 	for _, finding := range findings {
 		if finding.IsPhantom {
@@ -36,10 +41,20 @@ func ScoreFile(filename string, findings []analyzer.Finding, result sandbox.Sand
 			score += 0.50
 		}
 	}
+	for _, finding := range semResult.Findings {
+		switch finding.Severity {
+		case "HIGH":
+			score += 0.30
+		case "MEDIUM":
+			score += 0.15
+		case "LOW":
+			score += 0.05
+		}
+	}
 	if score > 1.0 {
 		score = 1.0
 	}
-	return FileResult{Filename: filename, Score: score, Risk: riskFor(score), Findings: findings, SandboxResult: result}
+	return FileResult{Filename: filename, Score: score, Risk: riskFor(score), Findings: findings, SemanticFindings: semResult.Findings, SemanticSkipped: semResult.Skipped, SemanticSkipReason: semResult.SkipReason, SandboxResult: result}
 }
 
 func BuildReport(files []FileResult) PRReport {
@@ -57,6 +72,7 @@ func BuildReport(files []FileResult) PRReport {
 		if file.SandboxResult.Panicked {
 			report.TotalPanics++
 		}
+		report.TotalSemanticIssues += len(file.SemanticFindings)
 	}
 	report.OverallScore /= float64(len(files))
 	report.OverallRisk = riskFor(report.OverallScore)

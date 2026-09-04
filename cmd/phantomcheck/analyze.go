@@ -2,32 +2,65 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/url"
 	"os"
+	"sort"
 	"strings"
 
 	"github.com/mananchugh02/phantomcheck/internal/analyzer"
 	ghrepo "github.com/mananchugh02/phantomcheck/internal/github"
 	"github.com/mananchugh02/phantomcheck/internal/llm"
+	reportpkg "github.com/mananchugh02/phantomcheck/internal/report"
 	"github.com/mananchugh02/phantomcheck/internal/sandbox"
 	"github.com/mananchugh02/phantomcheck/internal/scorer"
+	"github.com/mananchugh02/phantomcheck/internal/semantic"
 	"github.com/spf13/cobra"
 )
+
+type fileAnalysisResult struct {
+	file          ghrepo.ChangedFile
+	findings      []analyzer.Finding
+	sandboxResult sandbox.SandboxResult
+	semResult     semantic.SemanticResult
+	fileResult    scorer.FileResult
+	err           error
+}
 
 func init() {
 	cmd := &cobra.Command{Use: "analyze", Run: func(_ *cobra.Command, _ []string) {}}
 	cmd.Flags().String("pr", "", "GitHub pull request URL")
 	cmd.Flags().Bool("test", false, "Run the static analyzer against bundled sample code")
+	cmd.Flags().String("output", "text", "Output format: text or json")
+	cmd.Flags().String("fail-on", "", "Exit with code 1 if overall risk meets or exceeds this level. Valid values: LOW, MEDIUM, HIGH")
 	cmd.RunE = func(cmd *cobra.Command, _ []string) error {
+		output, _ := cmd.Flags().GetString("output")
+		if output != "text" && output != "json" {
+			return fail("invalid --output value: expected text or json")
+		}
+		failOn, _ := cmd.Flags().GetString("fail-on")
+		failOn = strings.ToUpper(strings.TrimSpace(failOn))
+		if failOn != "" && failOn != "LOW" && failOn != "MEDIUM" && failOn != "HIGH" {
+			return fail("invalid --fail-on value: expected LOW, MEDIUM, or HIGH")
+		}
 		testMode, _ := cmd.Flags().GetBool("test")
 		if testMode {
 			report, err := buildTestReport()
 			if err != nil {
 				return err
 			}
+			if output == "json" {
+				exitCode := exitCodeFor(report.OverallRisk, failOn)
+				if err := printJSONReport(report, exitCode); err != nil {
+					return err
+				}
+				maybeFail(report.OverallRisk, failOn, exitCode)
+				return nil
+			}
 			printReport(report, nil)
 			printLLMClientTest()
+			maybeFail(report.OverallRisk, failOn, exitCodeFor(report.OverallRisk, failOn))
 			return nil
 		}
 		prURL, _ := cmd.Flags().GetString("pr")
@@ -48,15 +81,24 @@ func init() {
 		if err != nil {
 			return err
 		}
-		if prContext, err := ghrepo.GetPRContext(ctx, client, owner, repo, prNumber); err != nil {
+		prContext := ghrepo.PRContext{}
+		if fetchedContext, err := ghrepo.GetPRContext(ctx, client, owner, repo, prNumber); err != nil {
 			fmt.Fprintln(os.Stderr, "warning: could not load PR context:", err)
 		} else {
-			printPRContext(prContext)
+			prContext = *fetchedContext
+			if output == "text" {
+				printPRContext(fetchedContext)
+			}
 		}
 		if len(toAnalyze) == 0 {
-			fmt.Println("No .go files changed in this PR. Nothing to analyze.")
-			if len(deleted) > 0 {
+			if output == "text" {
+				fmt.Println("No .go files changed in this PR. Nothing to analyze.")
+			}
+			if len(deleted) > 0 && output == "text" {
 				printDeletedFiles(deleted)
+			}
+			if output == "json" {
+				return printJSONReport(scorer.BuildReport(nil), 0)
 			}
 			return nil
 		}
@@ -64,30 +106,81 @@ func init() {
 		if err != nil {
 			return err
 		}
-		results := make([]scorer.FileResult, 0, len(toAnalyze))
-		for _, file := range toAnalyze {
-			content, err := ghrepo.GetFileContent(ctx, client, owner, repo, file.Path, headSHA)
-			if err != nil {
-				return err
-			}
-			findings, err := analyzer.Analyze(content)
-			if err != nil {
-				return err
-			}
-			runResult, err := sandbox.Run(content)
-			if err != nil {
-				return err
-			}
-			results = append(results, scorer.ScoreFile(file.Path, findings, runResult))
+		groqClient := (*llm.Client)(nil)
+		if groqKey := os.Getenv("GROQ_API_KEY"); groqKey != "" {
+			groqClient = llm.NewClient(groqKey)
 		}
-		report := scorer.BuildReport(results)
-		printReport(report, toAnalyze)
+		sem := make(chan struct{}, 5)
+		resultsCh := make(chan fileAnalysisResult, len(toAnalyze))
+		for _, file := range toAnalyze {
+			file := file
+			sem <- struct{}{}
+			go func() {
+				defer func() { <-sem }()
+				result := fileAnalysisResult{file: file, semResult: semantic.SemanticResult{Skipped: true, SkipReason: "GROQ_API_KEY not set"}}
+				content, err := ghrepo.GetFileContent(ctx, client, owner, repo, file.Path, headSHA)
+				if err != nil {
+					result.err = err
+					resultsCh <- result
+					return
+				}
+				result.findings, err = analyzer.Analyze(content)
+				if err != nil {
+					result.err = err
+					resultsCh <- result
+					return
+				}
+				result.sandboxResult, err = sandbox.Run(content)
+				if err != nil {
+					result.err = err
+					resultsCh <- result
+					return
+				}
+				if groqClient != nil {
+					result.semResult, err = semantic.Analyze(groqClient, file, prContext)
+					if err != nil {
+						fmt.Fprintln(os.Stderr, "warning: semantic analysis failed for", file.Path, ":", err)
+						result.semResult = semantic.SemanticResult{Skipped: true, SkipReason: "semantic analysis failed"}
+					}
+				}
+				result.fileResult = scorer.ScoreFile(file.Path, result.findings, result.sandboxResult, result.semResult)
+				resultsCh <- result
+			}()
+		}
+		results := make([]fileAnalysisResult, 0, len(toAnalyze))
+		for range toAnalyze {
+			results = append(results, <-resultsCh)
+		}
+		sort.Slice(results, func(i, j int) bool { return results[i].file.Path < results[j].file.Path })
+		fileResults := make([]scorer.FileResult, 0, len(results))
+		for _, result := range results {
+			if result.err != nil {
+				return result.err
+			}
+			fileResults = append(fileResults, result.fileResult)
+		}
+		report := scorer.BuildReport(fileResults)
+		if output == "text" {
+			printReport(report, toAnalyze)
+		}
 		body := ghrepo.FormatReport(report, deletedPaths(deleted))
-		if err := ghrepo.PostComment(ctx, client, owner, repo, prNumber, body); err != nil {
+		if err := ghrepo.UpsertComment(ctx, client, owner, repo, prNumber, body); err != nil {
 			fmt.Fprintln(os.Stderr, "error posting PR comment:", err)
 		} else {
-			fmt.Println("✅ Report posted as a comment on the PR.")
+			if output == "text" {
+				fmt.Println("✅ Report posted to PR as a review comment.")
+			} else {
+				fmt.Fprintln(os.Stderr, "✅ Report posted to PR as a review comment.")
+			}
 		}
+		if output == "json" {
+			exitCode := exitCodeFor(report.OverallRisk, failOn)
+			if err := printJSONReport(report, exitCode); err != nil {
+				return err
+			}
+			maybeFail(report.OverallRisk, failOn, exitCode)
+		}
+		maybeFail(report.OverallRisk, failOn, exitCodeFor(report.OverallRisk, failOn))
 		return nil
 	}
 	rootCmd.AddCommand(cmd)
@@ -119,7 +212,7 @@ func demo() {
 		if err != nil {
 			return scorer.PRReport{}, err
 		}
-		results = append(results, scorer.ScoreFile(fileCase.filename, findings, runResult))
+		results = append(results, scorer.ScoreFile(fileCase.filename, findings, runResult, semantic.SemanticResult{}))
 	}
 	return scorer.BuildReport(results), nil
 }
@@ -135,6 +228,16 @@ func printReport(report scorer.PRReport, files []ghrepo.ChangedFile) {
 				fmt.Printf("❌ Line %d: %s.%s — does not exist\n", finding.Line, finding.Package, finding.Func)
 			} else {
 				fmt.Printf("✅ Line %d: %s.%s\n", finding.Line, finding.Package, finding.Func)
+			}
+		}
+		fmt.Println("=== Semantic Analysis ===")
+		if file.SemanticSkipped {
+			fmt.Println("⏭️  Semantic analysis skipped:", file.SemanticSkipReason)
+		} else if len(file.SemanticFindings) == 0 {
+			fmt.Println("✅ No logical issues found")
+		} else {
+			for _, finding := range file.SemanticFindings {
+				fmt.Printf("%s %s (lines %d-%d)\n", semanticEmoji(finding.Severity), finding.Description, finding.StartLine, finding.EndLine)
 			}
 		}
 		switch {
@@ -158,6 +261,57 @@ func printReport(report scorer.PRReport, files []ghrepo.ChangedFile) {
 	fmt.Printf("Files  : %d\n", len(report.Files))
 	fmt.Printf("Phantom APIs : %d\n", report.TotalPhantom)
 	fmt.Printf("Panics       : %d\n", report.TotalPanics)
+	fmt.Printf("Semantic issues : %d\n", report.TotalSemanticIssues)
+}
+
+func printJSONReport(report scorer.PRReport, exitCode int) error {
+	jsonReport := reportpkg.BuildJSONReport(report)
+	jsonReport.ExitCode = exitCode
+	data, err := json.MarshalIndent(jsonReport, "", "  ")
+	if err != nil {
+		return err
+	}
+	fmt.Println(string(data))
+	return nil
+}
+
+func exitCodeFor(risk, threshold string) int {
+	if threshold != "" && riskRank(risk) >= riskRank(threshold) {
+		return 1
+	}
+	return 0
+}
+
+func riskRank(risk string) int {
+	switch strings.ToUpper(risk) {
+	case "HIGH":
+		return 3
+	case "MEDIUM":
+		return 2
+	case "LOW":
+		return 1
+	default:
+		return 0
+	}
+}
+
+func maybeFail(risk, threshold string, exitCode int) {
+	if exitCode != 1 {
+		return
+	}
+	fmt.Fprintf(os.Stderr, "PhantomCheck: overall risk %s meets or exceeds --fail-on threshold %s. Exiting with code 1.\n", risk, threshold)
+	os.Exit(1)
+}
+
+func semanticEmoji(severity string) string {
+	switch severity {
+	case "HIGH":
+		return "🔴"
+	case "MEDIUM":
+		return "🟡"
+	default:
+		return "🟢"
+	}
 }
 
 func formatFileHeader(path string, files []ghrepo.ChangedFile) string {
